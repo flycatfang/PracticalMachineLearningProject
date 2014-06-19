@@ -1,0 +1,167 @@
+`r opts_chunk$set(cache=TRUE, warning=FALSE)`
+
+Predicting Qualities of Physical Activities
+========================================================
+
+Introduction
+-------------------------------------
+
+Most people agree that doing more physical activities can help to improve people's health and life. It is very easy to know how much a particular activity one has done by count time of the activity, but it is hard to quantitatively measure how well one has done the activity. Recent developments in mobile and health devices have enabled possibilities to collect a large amount of data about how people do an activity. By analyze this data, quantitative measurements of the qualities of physical activities are no longer a difficult problem.
+
+Description of data
+---------------------------------
+
+Researchers from [Human Activity Recognition (HAR) research][1] ask 6 male participants (aged between 20 and 28) to perform lifting a 1.25kg dumbbell in 5 different manners, which are described as A, B, C, D and E. The manner A is the only one exactly following the specification. The other four manners corresponding to four different common mistakes respectively. The five manners are stored in the last column of the data named "classe". The data also include more than 150 variables, most of which are measured from 4 sensors attached on various positions on the participants' body.
+
+[1]:http://groupware.les.inf.puc-rio.br/har
+
+```{r results='hide'}
+# load caret and import data
+library(caret)
+set.seed(123456)
+```
+```{r}
+data<-read.csv("pml-training.csv",na.strings=c("NA","#DIV/0!",""))
+problem<-read.csv("pml-testing.csv")
+dim(data)
+dim(problem)
+```
+
+Methodology
+-----------------------------------
+
+The first 7 columns in the data represent the indices, usernames and information about time stamps and time windows for measurements. I believe this should not be related to the types of manner, since they should be the uniformly designed during the experiments for all the manners.  Therefore, it is better to delete the first 7 columns. 
+
+```{r}
+# drop first 7 cols
+data<-data[,-seq(1:7)]
+problem<-problem[,-seq(1:7)]
+```
+
+The data include a large number of missing values and invalid numbers such as "#DIV/0!" and "NA". Most of them do not provide any important information regarding the type of manner. For example,
+The following table shows the fraction of NAs in the variable "var_yaw_forearm"
+```{r echo=FALSE}
+d<-data.frame("Missing values and invalid numbers"=c("19216 (98%)"),"Valid numbers"=c("406 (2%)"))
+rownames(d)=c("Count")
+kable(d)
+```
+Therefore, all the columns that contain missing values and invalid numbers are also dropped. These processes cut the number of variables down to 52 variables. 
+
+```{r}
+# remove cols containing NAs
+hasNA<-as.vector(sapply(data[,1:152],function(x) {length(which(is.na(x)))!=0}))
+data<-data[,!hasNA]
+problem<-problem[,!hasNA]
+dim(data)
+dim(problem)
+```
+
+The remaining date is divided into two groups: training (75%) and validation (25%). The training data is used to train a model. The validation date is used to validate data and evaluate the accuracy of the data.
+
+```{r}
+# divide pml-training as training (75%) and testing (25%)
+inTrain<-createDataPartition(data$classe, p = 0.75)[[1]]
+training<-data[inTrain,]
+testing<-data[-inTrain,]
+dim(training)
+dim(testing)
+```
+
+Some of the variables are obviously correlated. For example, "accel_arm_x" and "magnet_arm_x" are measurements of acceleration and magnetometer reading of an arm on the x direction. In the lifting dumbbell activity, this two variables are is strongly correlated because in the activity, the arm will move over a relatively fixed path with relatively fixed speed (see following figure).
+
+```{r fig.width=9, fig.height=6}
+qplot(x=training$accel_arm_x,y=training$magnet_arm_x,col=training$classe,
+      xlab="accel_arm_x",ylab="magnet_arm_x")+scale_colour_discrete(name = "classe")
+
+```
+
+Considering this situation, it is necessary to preprocess the data using principal components analysis (PCA) to reduce number of variables. After PCA process (with 0.95 thresh), there are only 25 variables left.
+
+```{r}
+# preprocess with PCA for both training and testing
+preProc<-preProcess(training[,-53],method="pca")
+preProc$numComp
+trainPCA<-predict(preProc,training[,-53])
+trainPCA$classe=training$classe
+testPCA<-predict(preProc,testing[,-53])
+testPCA$classe=testing$classe
+```
+
+At this stage, there are two options to train the data: 
+- train the original training set which has 53 predictors and will be more accurate; 
+- train the new training data set with 25 principle components, which is faster but will lose some accuracy. 
+
+The random forest (RF) method can be used to train the two data sets. The trained models is applied to the validation data set to find out which option is better and then the better model will be used to find out the final results.
+
+Results
+------------------------
+
+### Training with original 53 predictors
+
+The original training data set which has 53 predictors is used to train a random forest model.
+
+
+```{r}
+# train a random forest model
+library(randomForest)
+fitRandomForest<-randomForest(training$classe ~.,data = training,importance = TRUE)
+```
+
+The model is applied to the validation data set and confusion matrix is calculated. The accuracy of the model in the validation set is 0.996 with 95% confidence interval is (0.994, 0.998). 
+
+```{r}
+#load(".RData")
+# confusion matrix
+predictRF<-predict(fitRandomForest,testing)
+confusionMatrix(predictRF,testing$classe)
+```
+
+### Training with 25 principal components
+
+The same process can be applied to the data set with 25 principal components. A random forest model is trained:
+
+```{r}
+# train a random forest model
+fitPCA<-randomForest(trainPCA$classe ~.,data = trainPCA,importance = TRUE)
+```
+
+The model is the used on the validation data set and confusion matrix is obtained. The accuracy of the model in the validation set is 0.98 with 95% confidence interval is (0.975, 0.983). 
+
+```{r}
+# confusion matrix
+predictPCA<-predict(fitPCA,testPCA)
+confusionMatrix(predictPCA,testPCA$classe)
+```
+
+### Properties of the random forest model
+
+From the accuracies in validation data set of the two models, the model trained with original data set (53 predictors) is better. Although it spend more time for training process, the excellent accuracy and easier to implement relative to the principle components make it a better model. 
+
+The random forest model contians `r fitRandomForest$ntree` trees. The following plot shows the training error as a function of number of trees. The errors for 5 manners are almost constant after 200 trees, so about 200 trees are enough to get the similar accuracy.
+
+```{r fig.width=9, fig.height=6}
+plot(fitRandomForest,main="Error vs. # of trees")
+```
+
+The variable importance plot is shown in the following figure, where displays decrease of accuracy and Gini coefficient of the model (only the highest 20 variables are shown).
+
+```{r fig.width=9, fig.height=6}
+# -- importance of variables plot
+varImpPlot(fitRandomForest,main="Variable Importance",n.var=20)
+```
+
+The mean decrease of accuracy indicates that the most relevant predictors in the model are "yaw_belt" and "roll_belt" and these two variables also have the highest Gini coefficients. Therefore, they are the most important variables that can be used to determine the quality of one's physical activity. It is interesting that the quality of a lifting-dumbbell activity which uses arms only is most relevant to two measurements on the belt. This is a point that HAR researchers should study in future.
+
+### Results of the project
+
+The aim of the project is to predict the type of manner of 20 testing data sets from a physical activity. The results are obtain by applying the trained random forest model to the 20 testing data sets and making predictions for them.
+
+```{r}
+answers<-predict(fitRandomForest,problem[,-53])
+answers
+```
+
+Summary
+---------------------------------
+
+The HAR data is used to distinguish the 5 different types of manner in lifting-dumbbell activity. The 53 sensor measurements are picked as predictors to train a random forest model. The final model is testified with a validation data set which achieves 99.6% accuracy, so the model is proper for predicting the type of manner in the activity. The model shows that the most important measurements of the quality of the lifting-dumbbell activity are "yaw_belt" and "roll_belt", which both set on the belt.
